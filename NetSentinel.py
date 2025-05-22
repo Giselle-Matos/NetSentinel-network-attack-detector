@@ -1,22 +1,26 @@
 import pyshark
-import joblib
+import csv
+import os
 import numpy as np
 from datetime import datetime
 
-# === 1. Carregar modelo e scaler treinados ===
-modelo = joblib.load("modelo_random_forest.joblib")
-scaler = joblib.load("scaler_random_forest.joblib")
+INTERFACE = 'enp0s3'  # Atualize se necessário (ex: 'eth0', 'wlan0', etc.)
+ARQUIVO_SAIDA = "trafego_benigno_capturado.csv"
+PACOTES_POR_FLOW = 10
 
-# === 2. Interface a ser monitorada ===
-INTERFACE = 'Wi-Fi'  # ou 'Ethernet', 'wlan0', etc. — depende do seu sistema
+# Criar cabeçalho CSV se o arquivo ainda não existe
+if not os.path.exists(ARQUIVO_SAIDA):
+    with open(ARQUIVO_SAIDA, mode='w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            'Flow Duration',
+            'Total Fwd Packets',
+            'Packet Length Mean',
+            'Flow Bytes/s',
+            'Fwd Packet Length Max',
+            'Label'  # Sempre 0 para benigno
+        ])
 
-# === 3. Variáveis para simular as features ===
-janela_pacotes = []
-pacotes_para_agrupar = 10  # número de pacotes para simular uma "flow"
-
-print(f"🔍 Monitorando tráfego na interface: {INTERFACE} (pressione CTRL+C para parar)\n")
-
-# === 4. Função para extrair features ===
 def extrair_features(pacotes):
     if len(pacotes) < 1:
         return None
@@ -43,28 +47,30 @@ def extrair_features(pacotes):
         total_fwd_packets,
         packet_length_mean,
         flow_bytes_s,
-        fwd_packet_length_max
+        fwd_packet_length_max,
+        0  # label = 0 (benigno)
     ]
 
-# === 5. Captura contínua de pacotes ===
+print(f"📡 Iniciando captura de tráfego benigno na interface: {INTERFACE}")
+janela = []
+
 try:
     captura = pyshark.LiveCapture(interface=INTERFACE)
 
     for pkt in captura.sniff_continuously():
-        janela_pacotes.append(pkt)
+        janela.append(pkt)
 
-        if len(janela_pacotes) >= pacotes_para_agrupar:
-            features = extrair_features(janela_pacotes)
-            janela_pacotes = []  # limpa para próxima janela
+        if len(janela) >= PACOTES_POR_FLOW:
+            features = extrair_features(janela)
+            janela = []
 
             if features:
-                X = scaler.transform([features])
-                resultado = modelo.predict(X)[0]
-                tempo = datetime.now().strftime("%H:%M:%S")
-                print(f"[{tempo}] ⚠️ ATAQUE" if resultado == 1 else f"[{tempo}] ✅ Benigno")
+                with open(ARQUIVO_SAIDA, mode='a', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(features)
+                print(f"✅ Flow salvo às {datetime.now().strftime('%H:%M:%S')}")
 
 except KeyboardInterrupt:
-    print("\n🛑 Captura finalizada pelo usuário.")
-
+    print("\n🛑 Captura encerrada pelo usuário.")
 except Exception as e:
-    print(f"❌ Erro durante a captura: {e}")
+    print(f"❌ Erro: {e}")
