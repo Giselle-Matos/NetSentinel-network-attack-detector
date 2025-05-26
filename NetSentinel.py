@@ -1,75 +1,62 @@
-import joblib
 import pyshark
+import joblib
 import numpy as np
 from datetime import datetime
 
-# === Carregamento do modelo treinado e scaler ===
-modelo = joblib.load("modelo_random_forest.pkl")
-scaler = joblib.load("scaler.pkl")
+# Carrega modelo e scaler treinados
+modelo = joblib.load('modelo_random_forest.joblib')
+scaler = joblib.load('scaler_random_forest.joblib')
 
-# === Interface de rede a ser monitorada ===
-INTERFACE = "enp0s3"  # Substitua conforme o nome da interface da VM alvo (use `ifconfig` ou `ip a`)
-
-# === Função para extrair características do pacote ===
-def extrair_caracteristicas(pacote):
+# === Função para extrair features de um pacote de rede ===
+def extrair_features(pacote):
     try:
-        duracao = float(pacote.frame_info.time_delta)  # Tempo entre este e o último pacote
-        total_fwd_packets = 1  # Supondo 1 por fluxo; adaptável se usar agrupamento posterior
-        packet_length = int(pacote.length)
-        packet_length_mean = packet_length  # Igual ao tamanho se fluxo for de 1 pacote
-        flow_bytes_s = packet_length / duracao if duracao > 0 else 0
-        fwd_packet_length_max = packet_length  # Valor máximo para esse fluxo único
+        flow_duration = float(pacote.sniff_time.timestamp() * 1000)  # tempo em ms
+        total_fwd_packets = 1  # cada pacote individual
+        packet_length_mean = float(pacote.length)
+        flow_bytes_per_sec = float(pacote.length) / 1.0  # simplificado como "1 segundo"
+        fwd_packet_length_max = float(pacote.length)
 
         return [
-            duracao,
+            flow_duration,
             total_fwd_packets,
             packet_length_mean,
-            flow_bytes_s,
-            fwd_packet_length_max,
-            0  # Label fictício, ignorado na predição
+            flow_bytes_per_sec,
+            fwd_packet_length_max
         ]
     except Exception as e:
-        print(f"[⚠️] Erro ao extrair características: {e}")
+        print(f"[⚠️] Erro ao extrair dados do pacote: {e}")
         return None
 
-# === Função de predição e saída formatada ===
-def prever_trafego(modelo, scaler, dados_pacote):
-    if len(dados_pacote) != 6:
-        print(f"[⚠️] Pacote ignorado. Dados incompletos: {dados_pacote}")
-        return
+# Interface de rede a ser monitorada (ajuste com 'ip a' se necessário)
+interface = 'enp0s3'
 
-    # Convertendo para numpy array e ajustando formato para scaler e modelo
-    entrada = np.array(dados_pacote[:-1], dtype=float).reshape(1, -1)
+print(f"📡 Monitorando tráfego na interface: {interface} (pressione CTRL+C para parar)\n")
 
-    # 🔎 Mostra os dados brutos
-    print(f"\n📦 Dados brutos capturados: {entrada}")
-
-    # Aplica o mesmo scaler usado no treinamento
-    entrada_normalizada = scaler.transform(entrada)
-
-    # 🔎 Mostra os dados padronizados (input real da IA)
-    print(f"📏 Dados normalizados (input do modelo): {entrada_normalizada}")
-
-    # Predição
-    predicao = modelo.predict(entrada_normalizada)[0]
-    label = "🔥 MALIGNO" if predicao == 1 else "✅ BENIGNO"
-
-    # Output
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {label} - Tamanho: {entrada[0][3]} bytes\n")
-
-# === Início do monitoramento ===
-print(f"📡 Monitorando tráfego na interface: {INTERFACE} (pressione CTRL+C para parar)")
-
-# Captura contínua usando pyshark
+# === Captura contínua ===
 try:
-    captura = pyshark.LiveCapture(interface=INTERFACE)
+    captura = pyshark.LiveCapture(interface=interface)
 
     for pacote in captura.sniff_continuously():
-        dados = extrair_caracteristicas(pacote)
-        if dados:
-            prever_trafego(modelo, scaler, dados)
+        features = extrair_features(pacote)
+        if features:
+            # Mostra os dados extraídos para análise comparativa
+            print(f"\n📥 Pacote capturado - Features extraídas:")
+            print(f"Flow Duration: {features[0]}")
+            print(f"Total Fwd Packets: {features[1]}")
+            print(f"Packet Length Mean: {features[2]}")
+            print(f"Flow Bytes/s: {features[3]}")
+            print(f"Fwd Packet Length Max: {features[4]}")
+
+            # Prepara para predição
+            features = np.array(features).reshape(1, -1)
+            features_padronizadas = scaler.transform(features)
+            predicao = modelo.predict(features_padronizadas)[0]
+
+            # Resultado da classificação
+            tipo = "🔥 MALIGNO" if predicao == 1 else "✅ BENIGNO"
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] {tipo} - Tamanho: {features[0][2]} bytes")
 
 except KeyboardInterrupt:
-    print("\n🛑 Captura finalizada pelo usuário.")
+    print("\n🛑 Captura interrompida pelo usuário.")
 except Exception as e:
-    print(f"[❌] Erro durante a captura: {e}")
+    print(f"[ERRO FATAL] Erro durante a captura: {e}")
