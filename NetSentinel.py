@@ -1,62 +1,68 @@
 import pyshark
 import joblib
 import numpy as np
+import time
 from datetime import datetime
+from statistics import mean
 
-# Carrega modelo e scaler treinados
+# === Carregamento do modelo e scaler ===
 modelo = joblib.load('modelo_random_forest.joblib')
 scaler = joblib.load('scaler_random_forest.joblib')
 
-# === Função para extrair features de um pacote de rede ===
-def extrair_features(pacote):
-    try:
-        flow_duration = float(pacote.sniff_time.timestamp() * 1000)  # tempo em ms
-        total_fwd_packets = 1  # cada pacote individual
-        packet_length_mean = float(pacote.length)
-        flow_bytes_per_sec = float(pacote.length) / 1.0  # simplificado como "1 segundo"
-        fwd_packet_length_max = float(pacote.length)
+# === Parâmetros da captura ===
+interface = 'enp0s3'
+janela_segundos = 3  # Intervalo de tempo para agrupar pacotes
 
-        return [
-            flow_duration,
-            total_fwd_packets,
-            packet_length_mean,
-            flow_bytes_per_sec,
-            fwd_packet_length_max
-        ]
-    except Exception as e:
-        print(f"[⚠️] Erro ao extrair dados do pacote: {e}")
+print(f"📡 Monitorando tráfego na interface: {interface} (em janelas de {janela_segundos}s)\n")
+
+def extrair_features_fluxo(pacotes):
+    if not pacotes:
         return None
 
-# Interface de rede a ser monitorada (ajuste com 'ip a' se necessário)
-interface = 'enp0s3'
+    duracoes = [float(pkt.sniff_timestamp) for pkt in pacotes]
+    tamanhos = [int(pkt.length) for pkt in pacotes]
 
-print(f"📡 Monitorando tráfego na interface: {interface} (pressione CTRL+C para parar)\n")
+    flow_duration = (max(duracoes) - min(duracoes)) * 1000  # em ms
+    total_fwd_packets = len(pacotes)
+    packet_length_mean = mean(tamanhos)
+    flow_bytes_per_sec = sum(tamanhos) / janela_segundos
+    fwd_packet_length_max = max(tamanhos)
 
-# === Captura contínua ===
+    return [
+        flow_duration,
+        total_fwd_packets,
+        packet_length_mean,
+        flow_bytes_per_sec,
+        fwd_packet_length_max
+    ]
+
 try:
     captura = pyshark.LiveCapture(interface=interface)
+    buffer = []
+    inicio_janela = time.time()
 
     for pacote in captura.sniff_continuously():
-        features = extrair_features(pacote)
-        if features:
-            # Mostra os dados extraídos para análise comparativa
-            print(f"\n📥 Pacote capturado - Features extraídas:")
-            print(f"Flow Duration: {features[0]}")
-            print(f"Total Fwd Packets: {features[1]}")
-            print(f"Packet Length Mean: {features[2]}")
-            print(f"Flow Bytes/s: {features[3]}")
-            print(f"Fwd Packet Length Max: {features[4]}")
+        buffer.append(pacote)
+        if (time.time() - inicio_janela) >= janela_segundos:
+            features = extrair_features_fluxo(buffer)
+            buffer.clear()
+            inicio_janela = time.time()
 
-            # Prepara para predição
-            features = np.array(features).reshape(1, -1)
-            features_padronizadas = scaler.transform(features)
-            predicao = modelo.predict(features_padronizadas)[0]
+            if features:
+                print("\n📦 Janela de pacotes - Features extraídas:")
+                print(f"Flow Duration: {features[0]:.2f} ms")
+                print(f"Total Fwd Packets: {features[1]}")
+                print(f"Packet Length Mean: {features[2]:.2f}")
+                print(f"Flow Bytes/s: {features[3]:.2f}")
+                print(f"Fwd Packet Length Max: {features[4]:.2f}")
 
-            # Resultado da classificação
-            tipo = "🔥 MALIGNO" if predicao == 1 else "✅ BENIGNO"
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] {tipo} - Tamanho: {features[0][2]} bytes")
+                entrada = np.array(features).reshape(1, -1)
+                entrada_pad = scaler.transform(entrada)
+                pred = modelo.predict(entrada_pad)[0]
 
+                status = "🔥 MALIGNO" if pred == 1 else "✅ BENIGNO"
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] {status}")
 except KeyboardInterrupt:
-    print("\n🛑 Captura interrompida pelo usuário.")
+    print("\n🛑 Captura encerrada pelo usuário.")
 except Exception as e:
-    print(f"[ERRO FATAL] Erro durante a captura: {e}")
+    print(f"⚠️ Erro durante execução: {e}")
